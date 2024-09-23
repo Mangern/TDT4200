@@ -73,6 +73,7 @@ int main(void) {
 
 void setup() {
     row_chunks = malloc(world_size * sizeof(int));
+    // Every process gets a contiguous subset of the rows
     for (int r = 0; r < world_size; ++r)
         row_chunks[r] = (int)( YSIZE / world_size ) + ((r < (YSIZE % world_size)) ? 1 : 0);
 
@@ -91,6 +92,7 @@ void setup() {
 }
 
 void calculate() {
+    // Simply do the handout calculation on "my" subset of the rows
     for(int j = my_row_start; j < my_row_end; j++) {
 	    for(int i = 0; i < XSIZE; i++) {
 			/* Calculate the number of iterations until divergence for each pixel.
@@ -107,6 +109,7 @@ void calculate() {
 				if(++iter==MAXITER) break;
 			}
 
+            // Do the colouring right away 
             fancycolour(&color_chunk[COLOR_PIXEL(i, j - my_row_start)], iter);
 		}
 	}

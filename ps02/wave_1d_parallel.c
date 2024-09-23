@@ -107,6 +107,8 @@ void domain_initialize ( void )
         buffers[2] = malloc ( (my_size+2)*sizeof(real_t) );
     } else {
         // if we are root, we need space for everything (for saving)
+        // implementation wise it is easier if all three buffers are the same size
+        // but we could save some space if N is large by only having one of them be that big.
         buffers[0] = malloc ( (N+2)*sizeof(real_t) );
         buffers[1] = malloc ( (N+2)*sizeof(real_t) );
         buffers[2] = malloc ( (N+2)*sizeof(real_t) );

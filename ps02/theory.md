@@ -3,6 +3,10 @@
 ## Question 1 
 *What speed-up / expected speed-up did you get by parallelising the code?*
 
+I decided to only time from rank 0, because it depends on all the other ranks.
+
+An alternative would be to collect timings from all ranks and perform statistics on the collected timings.
+
 Here are some runs on my local AMD Ryzen 5 5600X 6-Core Processor:
 
 |         | Sequential | Parallel n=1 | Parallel n=4 | Parallel n=13|
@@ -15,13 +19,16 @@ Here are some runs on my local AMD Ryzen 5 5600X 6-Core Processor:
 | Average | 4.42s      | 4.49s        | 1.29s        | 2.05s        |
 | Speedup | 1.00x      | 0.98x        | 3.43x        | 2.15x        |
 
-When `n>6` it is oversubscribed, and we can see a worse performance.
+When `n>6` it is oversubscribed on this machine, and we can actually see a worse performance.
 
 ## Question 2
 *What is the name for this type of parallelisation (splitting the domain between processes and using ghost cells to communicate)?*
 
-The type of parallelisation we use in this exercise is SPMD, Single Program Multiple Data. 
+In the Flynn taxonomy, the type of parallelism we use in this exercise is SPMD, Single Program Multiple Data. 
 Because there is only one program, but the processes branch based on their rank. The data is split between them.
+
+The way we use this technique to solve a PDE can be referred to as Domain Decomposition. This is a kind of divide and conquer approach to solving PDEs using parallel computing, 
+where each rank solves an (almost) independent problem, only interacting with the other at some boundary of its own subdomain, referred to as it's halo.
 
 ## Question 3 
 *What is the difference between point-to-point communication and collective communication?*
@@ -35,8 +42,11 @@ On the contrary, functions that involve communication among all the ranks in a c
 Examples are `MPI_Bcast` (broadcast) and `MPI_Scatter`.
 
 There are some key differences between the point-to-point communications and the collective ones:
+
 - When using collective communication, all processes must use the exact same function. 
+
 - The function calls must have compatible arguments. For example, when using `MPI_Bcast`, the source_proc argument must be equal for all ranks.
+
 - The matching of point-to-point communication calls are based on argument types and tags, while collective functions are matched on the order in which they are called.
 
 ## Question 4
@@ -58,4 +68,4 @@ To make both be of type `int*`, we could write:
 
 ```c
 int *a, *b;
-``
+```

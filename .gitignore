@@ -6,5 +6,5 @@
 *.mp4
 *.zip
 ps01a/wave_1d
-ps02/parallel
-ps02/sequential
+*/parallel
+*/sequential

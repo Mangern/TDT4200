@@ -31,7 +31,6 @@ real_t
 // TASK: T1b
 // Declare variables each MPI process will need
 // BEGIN: T1b
-
 #define MPI_RANK_ROOT ( world_rank == 0 )
 #define MPI_RANK_LAST ( world_rank == world_size - 1 )
 #define NUM_COMM_DIMS 2
@@ -53,8 +52,11 @@ int subgrid_loc[2] = { 0, 0 };
 int* subgrid_rows_sz;
 int* subgrid_cols_sz;
 
-int neigbors[2][2];
+MPI_Request *send_requests;
+MPI_Request *recv_requests;
+MPI_Datatype column_vector_type;
 
+int neigbors[2][2];
 // END: T1b
 
 // Simulation parameters: size, step count, and how often to save the state
@@ -89,9 +91,6 @@ void move_buffer_window ( void )
 void domain_initialize ( void )
 {
 // BEGIN: T4
-    //printf("Hello from rank %d, M = %ld, N = %ld\n", world_rank, M, N);
-    // TODO: split
-
     subgrid_rows_sz = malloc((comm_dims[0] * sizeof(int)));
     subgrid_cols_sz = malloc((comm_dims[1] * sizeof(int)));
 
@@ -114,10 +113,20 @@ void domain_initialize ( void )
     subgrid_dims[0] = subgrid_rows_sz[comm_coords[0]];
     subgrid_dims[1] = subgrid_cols_sz[comm_coords[1]];
 
+    // Rows are trivially contiguous, columns have a stride
+    MPI_Type_vector(subgrid_dims[0], 1, subgrid_dims[1] + 2, MPI_DOUBLE, &column_vector_type);
+    MPI_Type_commit(&column_vector_type);
+
     // Allocate only our own subgrid
     buffers[0] = malloc ( (subgrid_dims[0]+2)*(subgrid_dims[1]+2)*sizeof(real_t) );
     buffers[1] = malloc ( (subgrid_dims[0]+2)*(subgrid_dims[1]+2)*sizeof(real_t) );
     buffers[2] = malloc ( (subgrid_dims[0]+2)*(subgrid_dims[1]+2)*sizeof(real_t) );
+
+    // Send will happen along all four borders
+    // Allocate twice needed for send_requests
+    send_requests = malloc ( sizeof(MPI_Request) * 4 * 2 );
+    // and let recv_requests point to last half to get a single Waitall for everything.
+    recv_requests = &send_requests[4];
 
     MPI_Cart_shift(comm_cart, 0, 1, &neigbors[0][0], &neigbors[0][1]);
     MPI_Cart_shift(comm_cart, 1, 1, &neigbors[1][0], &neigbors[1][1]);
@@ -156,6 +165,9 @@ void domain_finalize ( void )
 
     free(subgrid_rows_sz);
     free(subgrid_cols_sz);
+
+    // also 'frees' recv_requests because its the same buffer
+    free(send_requests);
 }
 
 
@@ -182,85 +194,32 @@ void time_step ( void )
 void border_exchange ( void )
 {
 // BEGIN: T6
+    // Simultaneous request counter and tag
+    int tag = 0;
 
-    // TODO: efficient bruuuuuuuur
+    // send at top row, receive at bottom
+    MPI_Isend(&U(subgrid_loc[0], subgrid_loc[1]),                   subgrid_dims[1], MPI_DOUBLE, neigbors[0][0], tag, comm_cart, &send_requests[tag]);
+    MPI_Irecv(&U(subgrid_loc[0] + subgrid_dims[0], subgrid_loc[1]), subgrid_dims[1], MPI_DOUBLE, neigbors[0][1], tag, comm_cart, &recv_requests[tag]);
+    ++tag;
 
-    // top row
-    for (int j = subgrid_loc[1]; j < subgrid_loc[1] + subgrid_dims[1]; ++j) {
-        // send at top row, receive at bottom
-        MPI_Sendrecv(
-            &U(subgrid_loc[0], j), 
-            1, 
-            MPI_DOUBLE, 
-            neigbors[0][0], 
-            1, 
-            &U(subgrid_loc[0] + subgrid_dims[0], j), 
-            1, 
-            MPI_DOUBLE, 
-            neigbors[0][1], 
-            1, 
-            comm_cart, 
-            MPI_STATUS_IGNORE 
-        );
-    }
+    // send bottom row, receive top
+    MPI_Isend(&U(subgrid_loc[0] + subgrid_dims[0] - 1, subgrid_loc[1]), subgrid_dims[1], MPI_DOUBLE, neigbors[0][1], tag, comm_cart, &send_requests[tag]);
+    MPI_Irecv(&U(subgrid_loc[0] - 1, subgrid_loc[1]),                   subgrid_dims[1], MPI_DOUBLE, neigbors[0][0], tag, comm_cart, &recv_requests[tag]);
+    ++tag;
 
-    // bottom row
-    for (int j = subgrid_loc[1]; j < subgrid_loc[1] + subgrid_dims[1]; ++j) {
-        // send at bottom row, receive at top
-        MPI_Sendrecv(
-            &U(subgrid_loc[0] + subgrid_dims[0] - 1, j), 
-            1, 
-            MPI_DOUBLE, 
-            neigbors[0][1], 
-            1, 
-            &U(subgrid_loc[0]-1, j), 
-            1, 
-            MPI_DOUBLE, 
-            neigbors[0][0], 
-            1, 
-            comm_cart, 
-            MPI_STATUS_IGNORE 
-        );
-    }
+    // send left col, receive right
+    MPI_Isend(&U(subgrid_loc[0], subgrid_loc[1]),                   1, column_vector_type, neigbors[1][0], tag, comm_cart, &send_requests[tag]);
+    MPI_Irecv(&U(subgrid_loc[0], subgrid_loc[1] + subgrid_dims[1]), 1, column_vector_type, neigbors[1][1], tag, comm_cart, &recv_requests[tag]);
+    ++tag;
 
-    // left col
+    // send right col, receive left
+    MPI_Isend(&U(subgrid_loc[0], subgrid_loc[1] + subgrid_dims[1] - 1), 1, column_vector_type, neigbors[1][1], tag, comm_cart, &send_requests[tag]);
+    MPI_Irecv(&U(subgrid_loc[0], subgrid_loc[1] - 1),                   1, column_vector_type, neigbors[1][0], tag, comm_cart, &recv_requests[tag]);
+    ++tag;
 
-    for (int i = subgrid_loc[0]; i < subgrid_loc[0] + subgrid_dims[0]; ++i) {
-        // send at left col, receive at right
-        MPI_Sendrecv(
-            &U(i, subgrid_loc[1]), 
-            1, 
-            MPI_DOUBLE, 
-            neigbors[1][0], 
-            1, 
-            &U(i, subgrid_loc[1] + subgrid_dims[1]), 
-            1, 
-            MPI_DOUBLE, 
-            neigbors[1][1], 
-            1, 
-            comm_cart, 
-            MPI_STATUS_IGNORE 
-        );
-    }
-
-    // right col
-    for (int i = subgrid_loc[0]; i < subgrid_loc[0] + subgrid_dims[0]; ++i) {
-        // send at right col, receive at left
-        MPI_Sendrecv(
-            &U(i, subgrid_loc[1] + subgrid_dims[1] - 1), 
-            1, 
-            MPI_DOUBLE, 
-            neigbors[1][1], 
-            1, 
-            &U(i, subgrid_loc[1]-1), 
-            1, 
-            MPI_DOUBLE, 
-            neigbors[1][0], 
-            1, 
-            comm_cart, 
-            MPI_STATUS_IGNORE 
-        );
-    }
+    // tag holds number of sends (or receives)
+    // double this to wait for all sends and receives
+    MPI_Waitall(2*tag, send_requests, MPI_STATUSES_IGNORE);
 
 // END: T6
 }

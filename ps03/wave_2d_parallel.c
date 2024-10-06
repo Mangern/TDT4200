@@ -36,9 +36,10 @@ real_t
 #define MPI_RANK_LAST ( world_rank == world_size - 1 )
 #define NUM_COMM_DIMS 2
 
-#define U_prv(i,j) buffers[0][((i)+1)*(N+2)+(j)+1]
-#define U(i,j)     buffers[1][((i)+1)*(N+2)+(j)+1]
-#define U_nxt(i,j) buffers[2][((i)+1)*(N+2)+(j)+1]
+// Redefine the macros to subtract the offset we have in our rank
+#define U_prv(i,j) buffers[0][(((i)-subgrid_loc[0])+1)*(subgrid_dims[1]+2)+((j)-subgrid_loc[1])+1]
+#define U(i,j)     buffers[1][(((i)-subgrid_loc[0])+1)*(subgrid_dims[1]+2)+((j)-subgrid_loc[1])+1]
+#define U_nxt(i,j) buffers[2][(((i)-subgrid_loc[0])+1)*(subgrid_dims[1]+2)+((j)-subgrid_loc[1])+1]
 
 int world_size;
 int world_rank;
@@ -72,9 +73,6 @@ const real_t
 real_t
     dt;
 
-
-
-
 // Rotate the time step buffers.
 void move_buffer_window ( void )
 {
@@ -93,9 +91,6 @@ void domain_initialize ( void )
 // BEGIN: T4
     //printf("Hello from rank %d, M = %ld, N = %ld\n", world_rank, M, N);
     // TODO: split
-    buffers[0] = malloc ( (M+2)*(N+2)*sizeof(real_t) );
-    buffers[1] = malloc ( (M+2)*(N+2)*sizeof(real_t) );
-    buffers[2] = malloc ( (M+2)*(N+2)*sizeof(real_t) );
 
     subgrid_rows_sz = malloc((comm_dims[0] * sizeof(int)));
     subgrid_cols_sz = malloc((comm_dims[1] * sizeof(int)));
@@ -118,6 +113,11 @@ void domain_initialize ( void )
 
     subgrid_dims[0] = subgrid_rows_sz[comm_coords[0]];
     subgrid_dims[1] = subgrid_cols_sz[comm_coords[1]];
+
+    // Allocate only our own subgrid
+    buffers[0] = malloc ( (subgrid_dims[0]+2)*(subgrid_dims[1]+2)*sizeof(real_t) );
+    buffers[1] = malloc ( (subgrid_dims[0]+2)*(subgrid_dims[1]+2)*sizeof(real_t) );
+    buffers[2] = malloc ( (subgrid_dims[0]+2)*(subgrid_dims[1]+2)*sizeof(real_t) );
 
     MPI_Cart_shift(comm_cart, 0, 1, &neigbors[0][0], &neigbors[0][1]);
     MPI_Cart_shift(comm_cart, 1, 1, &neigbors[1][0], &neigbors[1][1]);
@@ -272,25 +272,25 @@ void boundary_condition ( void )
 {
 // BEGIN: T7
     if (comm_coords[1] == 0) {
-        for ( int_t i=0; i<M; i++ )
+        for ( int_t i=subgrid_loc[0]; i<subgrid_loc[0] + subgrid_dims[0]; i++ )
         {
             U(i,-1) = U(i,1);
         }
     }
     if (comm_coords[1] == comm_dims[1] - 1) {
-        for ( int_t i=0; i<M; i++ )
+        for ( int_t i=subgrid_loc[0]; i<subgrid_loc[0] + subgrid_dims[0]; i++ )
         {
             U(i,N)  = U(i,N-2);
         }
     }
     if (comm_coords[0] == 0) {
-        for ( int_t j=0; j<N; j++ )
+        for ( int_t j=subgrid_loc[1]; j<subgrid_loc[1] + subgrid_dims[1]; j++ )
         {
             U(-1,j) = U(1,j);
         }
     }
     if (comm_coords[0] == comm_dims[0] - 1) {
-        for ( int_t j=0; j<N; j++ )
+        for ( int_t j=subgrid_loc[1]; j<subgrid_loc[1] + subgrid_dims[1]; j++ )
         {
             U(M,j)  = U(M-2,j);
         }
@@ -333,14 +333,6 @@ void domain_save ( int_t step )
     }
 
     MPI_File_close(&out);
-    /*
-    FILE *out = fopen ( filename, "wb" );
-    for ( int_t i=0; i<M; i++ )
-    {
-        fwrite ( &U(i,0), sizeof(real_t), N, out );
-    }
-    fclose ( out );
-    */
 // END: T8
 }
 

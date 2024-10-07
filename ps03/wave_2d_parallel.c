@@ -35,6 +35,10 @@ real_t
 #define MPI_RANK_LAST ( world_rank == world_size - 1 )
 #define NUM_COMM_DIMS 2
 
+// This time I chose to use 'global' coordinates for all calculations
+// and instead keep track of offsets offsets where necessary to reduce memory usage.
+// I felt like this was easier to reason about conceptually.
+
 // Redefine the macros to subtract the offset we have in our rank
 #define U_prv(i,j) buffers[0][(((i)-subgrid_loc[0])+1)*(subgrid_dims[1]+2)+((j)-subgrid_loc[1])+1]
 #define U(i,j)     buffers[1][(((i)-subgrid_loc[0])+1)*(subgrid_dims[1]+2)+((j)-subgrid_loc[1])+1]
@@ -44,19 +48,34 @@ int world_size;
 int world_rank;
 
 MPI_Comm comm_cart;
+// size of the communicator in each axis
 int comm_dims[2] = { 0, 0 };
+// my coordinates in the communicator
 int comm_coords[2] = { 0, 0 };
 
+// { {N, S}, {W, E} }
+int neigbors[2][2];
+int neighbor_n, neighbor_s, neighbor_w, neighbor_e;
+
+// size of my subgrid
 int subgrid_dims[2] = { 0, 0 };
+// top-left corner of my subgrid in the global coordinates
 int subgrid_loc[2] = { 0, 0 };
+
+// sizes of all chunks 
 int* subgrid_rows_sz;
+// sizes of all column chunks
 int* subgrid_cols_sz;
 
-MPI_Request *send_requests;
-MPI_Request *recv_requests;
+// Send will happen along all four borders
+// Allocate twice needed for send_requests
+// and let recv_requests point to last half to get a single Waitall for everything.
+MPI_Request send_requests[8];
+MPI_Request *recv_requests = &send_requests[4];
+
+// custom type for sending/receiving column ghost points
 MPI_Datatype column_vector_type;
 
-int neigbors[2][2];
 // END: T1b
 
 // Simulation parameters: size, step count, and how often to save the state
@@ -122,22 +141,11 @@ void domain_initialize ( void )
     buffers[1] = malloc ( (subgrid_dims[0]+2)*(subgrid_dims[1]+2)*sizeof(real_t) );
     buffers[2] = malloc ( (subgrid_dims[0]+2)*(subgrid_dims[1]+2)*sizeof(real_t) );
 
-    // Send will happen along all four borders
-    // Allocate twice needed for send_requests
-    send_requests = malloc ( sizeof(MPI_Request) * 4 * 2 );
-    // and let recv_requests point to last half to get a single Waitall for everything.
-    recv_requests = &send_requests[4];
 
-    MPI_Cart_shift(comm_cart, 0, 1, &neigbors[0][0], &neigbors[0][1]);
-    MPI_Cart_shift(comm_cart, 1, 1, &neigbors[1][0], &neigbors[1][1]);
-
-    if (world_rank == 0) {
-        // debug assert
-        assert(neigbors[0][0] == MPI_PROC_NULL);
-        assert(neigbors[1][0] == MPI_PROC_NULL);
-    }
-
-    //printf("%d, (i, j) = (%d, %d), (h, w) = (%d, %d)\n", world_rank, subgrid_loc[0], subgrid_loc[1], subgrid_dims[1], subgrid_dims[1]);
+    // calculate N and S neigbors
+    MPI_Cart_shift(comm_cart, 0, 1, &neighbor_n, &neighbor_s);
+    // Calculate W and E neighbors
+    MPI_Cart_shift(comm_cart, 1, 1, &neighbor_w, &neighbor_e);
 
     for ( int_t i=subgrid_loc[0]; i<subgrid_loc[0] + subgrid_dims[0]; i++ )
     {
@@ -165,9 +173,6 @@ void domain_finalize ( void )
 
     free(subgrid_rows_sz);
     free(subgrid_cols_sz);
-
-    // also 'frees' recv_requests because its the same buffer
-    free(send_requests);
 }
 
 
@@ -194,27 +199,30 @@ void time_step ( void )
 void border_exchange ( void )
 {
 // BEGIN: T6
-    // Simultaneous request counter and tag
+    // Simultaneous request-counter and tag
     int tag = 0;
 
+    // All send/recvs where the destination is MPI_PROC_NULL will simply not be carried out,
+    // so we don't have to check for it.
+
     // send at top row, receive at bottom
-    MPI_Isend(&U(subgrid_loc[0], subgrid_loc[1]),                   subgrid_dims[1], MPI_DOUBLE, neigbors[0][0], tag, comm_cart, &send_requests[tag]);
-    MPI_Irecv(&U(subgrid_loc[0] + subgrid_dims[0], subgrid_loc[1]), subgrid_dims[1], MPI_DOUBLE, neigbors[0][1], tag, comm_cart, &recv_requests[tag]);
+    MPI_Isend(&U(subgrid_loc[0], subgrid_loc[1]),                   subgrid_dims[1], MPI_DOUBLE, neighbor_n, tag, comm_cart, &send_requests[tag]);
+    MPI_Irecv(&U(subgrid_loc[0] + subgrid_dims[0], subgrid_loc[1]), subgrid_dims[1], MPI_DOUBLE, neighbor_s, tag, comm_cart, &recv_requests[tag]);
     ++tag;
 
     // send bottom row, receive top
-    MPI_Isend(&U(subgrid_loc[0] + subgrid_dims[0] - 1, subgrid_loc[1]), subgrid_dims[1], MPI_DOUBLE, neigbors[0][1], tag, comm_cart, &send_requests[tag]);
-    MPI_Irecv(&U(subgrid_loc[0] - 1, subgrid_loc[1]),                   subgrid_dims[1], MPI_DOUBLE, neigbors[0][0], tag, comm_cart, &recv_requests[tag]);
+    MPI_Isend(&U(subgrid_loc[0] + subgrid_dims[0] - 1, subgrid_loc[1]), subgrid_dims[1], MPI_DOUBLE, neighbor_s, tag, comm_cart, &send_requests[tag]);
+    MPI_Irecv(&U(subgrid_loc[0] - 1, subgrid_loc[1]),                   subgrid_dims[1], MPI_DOUBLE, neighbor_n, tag, comm_cart, &recv_requests[tag]);
     ++tag;
 
     // send left col, receive right
-    MPI_Isend(&U(subgrid_loc[0], subgrid_loc[1]),                   1, column_vector_type, neigbors[1][0], tag, comm_cart, &send_requests[tag]);
-    MPI_Irecv(&U(subgrid_loc[0], subgrid_loc[1] + subgrid_dims[1]), 1, column_vector_type, neigbors[1][1], tag, comm_cart, &recv_requests[tag]);
+    MPI_Isend(&U(subgrid_loc[0], subgrid_loc[1]),                   1, column_vector_type, neighbor_w, tag, comm_cart, &send_requests[tag]);
+    MPI_Irecv(&U(subgrid_loc[0], subgrid_loc[1] + subgrid_dims[1]), 1, column_vector_type, neighbor_e, tag, comm_cart, &recv_requests[tag]);
     ++tag;
 
     // send right col, receive left
-    MPI_Isend(&U(subgrid_loc[0], subgrid_loc[1] + subgrid_dims[1] - 1), 1, column_vector_type, neigbors[1][1], tag, comm_cart, &send_requests[tag]);
-    MPI_Irecv(&U(subgrid_loc[0], subgrid_loc[1] - 1),                   1, column_vector_type, neigbors[1][0], tag, comm_cart, &recv_requests[tag]);
+    MPI_Isend(&U(subgrid_loc[0], subgrid_loc[1] + subgrid_dims[1] - 1), 1, column_vector_type, neighbor_e, tag, comm_cart, &send_requests[tag]);
+    MPI_Irecv(&U(subgrid_loc[0], subgrid_loc[1] - 1),                   1, column_vector_type, neighbor_w, tag, comm_cart, &recv_requests[tag]);
     ++tag;
 
     // tag holds number of sends (or receives)
@@ -346,12 +354,15 @@ int main ( int argc, char **argv )
             snapshot_freq = options->snapshot_frequency;
         }
 
+        // use int64_t because that is out int_t type.
+        // (kinda defeats the purpose of typedeffing int_t)
         MPI_Bcast(&M,             1, MPI_INT64_T, 0, MPI_COMM_WORLD);
         MPI_Bcast(&N,             1, MPI_INT64_T, 0, MPI_COMM_WORLD);
         MPI_Bcast(&max_iteration, 1, MPI_INT64_T, 0, MPI_COMM_WORLD);
         MPI_Bcast(&snapshot_freq, 1, MPI_INT64_T, 0, MPI_COMM_WORLD);
         int periods[2] = { 0, 0 };
 
+        // setup cartesian communicator
         MPI_Dims_create(world_size, 2, comm_dims);
 
         MPI_Cart_create(
@@ -375,18 +386,20 @@ int main ( int argc, char **argv )
 // TASK: T2
 // Time your code
 // BEGIN: T2
-    if (MPI_RANK_ROOT) {
-        gettimeofday( &t_start, NULL );
-    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    gettimeofday( &t_start, NULL );
 
     simulate();
+
+    gettimeofday( &t_end, NULL );
+
+    // calculate maximum time taken
+    double max_time;
+    double my_time = WALLTIME(t_end) - WALLTIME(t_start);
+    MPI_Reduce(&my_time, &max_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
     if (MPI_RANK_ROOT) {
-
-        gettimeofday( &t_end, NULL );
-
-        printf( "Total elapsed time: %lf seconds\n",
-            WALLTIME(t_end) - WALLTIME(t_start)
-        );
+        printf( "Total elapsed time: %lf seconds\n", max_time);
     }
 // END: T2
 

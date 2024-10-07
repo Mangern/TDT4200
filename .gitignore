@@ -6,5 +6,6 @@
 *.mp4
 *.zip
 ps01a/wave_1d
-*/parallel
-*/sequential
+**/parallel
+**/sequential
+pthreads/

@@ -22,7 +22,6 @@ typedef double real_t;
 // Pthread management
 // BEGIN: T1b
 int_t n_threads = 1;
-pthread_mutex_t barrier_lock;
 pthread_barrier_t barrier_stop;
 // END: T1b
 
@@ -97,10 +96,11 @@ void domain_finalize ( void )
 void time_step ( int_t thread_id )
 {
 // BEGIN: T3
-    int_t sz = N / n_threads;
-    int_t row_start = thread_id * sz;
-    int_t row_end = (thread_id + 1) * sz;
-    if (thread_id == n_threads - 1)row_end += N % n_threads;
+    int_t chunk_size = N / n_threads;
+    int_t row_start = thread_id * chunk_size;
+    int_t row_end = (thread_id + 1) * chunk_size;
+    // Just make the last thread receive the remaining cells
+    if (thread_id == n_threads - 1)row_end = N;
 
     for ( int_t i=row_start; i<row_end; ++i)
         for ( int_t j=0; j<N; j += 1 )
@@ -108,7 +108,6 @@ void time_step ( int_t thread_id )
                      + (dt*dt*c*c)/(h*h) * (
                         U(i-1,j)+U(i+1,j)+U(i,j-1)+U(i,j+1)-4.0*U(i,j)
                      );
-    pthread_barrier_wait(&barrier_stop);
 // END: T3
 }
 
@@ -118,10 +117,11 @@ void time_step ( int_t thread_id )
 void boundary_condition ( int_t thread_id )
 {
 // BEGIN: T4
-    int_t sz = N / n_threads;
-    int_t row_start = thread_id * sz;
-    int_t row_end = (thread_id + 1) * sz;
-    if (thread_id == n_threads - 1)row_end += N % n_threads;
+    int_t chunk_size = N / n_threads;
+    int_t row_start = thread_id * chunk_size;
+    int_t row_end = (thread_id + 1) * chunk_size;
+    // Just make the last thread receive the remaining cells
+    if (thread_id == n_threads - 1)row_end = N;
 
     for ( int_t i=row_start; i<row_end; ++i )
     {
@@ -133,7 +133,6 @@ void boundary_condition ( int_t thread_id )
         U(-1,j) = U(1,j);
         U(N,j)  = U(N-2,j);
     }
-    pthread_barrier_wait(&barrier_stop);
 // END: T4
 }
 
@@ -164,11 +163,15 @@ void *simulate ( void *id )
             if (tid == 0)domain_save ( iteration / snapshot_freq );
         }
 
+        // Essentially wait for tid 0 to save
         pthread_barrier_wait(&barrier_stop);
 
         // Derive step t+1 from steps t and t-1
         boundary_condition(tid);
+        pthread_barrier_wait(&barrier_stop);
+
         time_step(tid);
+        pthread_barrier_wait(&barrier_stop);
 
         // Rotate the time step buffers
         if (tid == 0)move_buffer_window();

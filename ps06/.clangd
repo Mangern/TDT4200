@@ -1,0 +1,5 @@
+CompileFlags:
+  Add:
+    - -xcuda
+    - -I/usr/local/cuda/include
+    - -L/usr/local/cuda/include

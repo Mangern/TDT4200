@@ -40,7 +40,7 @@ done
 if [ $found_difference -eq 1 ]; then
     echo
     echo
-    echo "${GREEN}The sequential and parallel version produced mathcing output!${RESET}"
+    echo "${GREEN}The sequential and parallel version produced matching output!${RESET}"
     echo
     echo
 else
